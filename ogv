@@ -1,328 +1,302 @@
 """
 OGV / OGG Video Player
-Requires: pip install opencv-python imageio-ffmpeg
+Requires: pip install imageio-ffmpeg pillow   (both usually already installed)
 Run:      python ogv_player.py
+          python ogv_player.py myvideo.ogv
 """
 
-import cv2
-import threading
-import queue
-import time
-import subprocess
-import sys
-import os
-import struct
-import wave
-import tempfile
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from PIL import Image, ImageTk
+import subprocess, threading, queue, time, os, sys
 
 try:
     import imageio_ffmpeg
     FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 except ImportError:
-    FFMPEG = "ffmpeg"
+    FFMPEG = "ffmpeg"   # fallback to system ffmpeg
 
-try:
-    import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
-except ImportError:
-    sys.exit("tkinter is required. On Ubuntu: sudo apt install python3-tk")
-
-# ─────────────────────────────────────────────────────────────
-# Attempt to import pygame for audio; fall back to silent mode
-# ─────────────────────────────────────────────────────────────
+# ── optional audio via pygame ──────────────────────────────────────────────
 try:
     import pygame
-    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
-    AUDIO_BACKEND = "pygame"
+    pygame.mixer.init(44100, -16, 2, 2048)
+    HAS_AUDIO = True
 except Exception:
-    AUDIO_BACKEND = None
+    HAS_AUDIO = False
 
 
-class VideoPlayer:
-    def __init__(self, root: tk.Tk):
+def probe(path):
+    """Return (width, height, fps, duration) via ffmpeg."""
+    cmd = [FFMPEG, "-i", path]
+    out = subprocess.run(cmd, stderr=subprocess.PIPE,
+                         stdout=subprocess.DEVNULL).stderr.decode(errors="ignore")
+    import re
+    w = h = fps = dur = None
+    m = re.search(r"(\d+)x(\d+)", out)
+    if m: w, h = int(m.group(1)), int(m.group(2))
+    m = re.search(r"(\d+\.?\d*)\s*(?:tbr|fps)", out)
+    if m: fps = float(m.group(1))
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", out)
+    if m: dur = int(m.group(1))*3600 + int(m.group(2))*60 + float(m.group(3))
+    return w or 640, h or 360, fps or 25.0, dur or 0
+
+
+class Player:
+    def __init__(self, root):
         self.root = root
         self.root.title("OGV / OGG Video Player")
         self.root.configure(bg="#0d1117")
-        self.root.resizable(True, True)
 
-        self._cap = None
-        self._filepath = None
+        self._proc   = None          # ffmpeg subprocess
+        self._aq     = queue.Queue() # audio temp path holder
+        self._fq     = queue.Queue(maxsize=6)
         self._playing = False
         self._stopped = True
+        self._W = self._H = 0
         self._fps = 25.0
-        self._total_frames = 0
-        self._current_frame = 0
-        self._seek_requested = None   # frame index to seek to
-        self._lock = threading.Lock()
-        self._frame_q: queue.Queue = queue.Queue(maxsize=4)
+        self._duration = 0.0
+        self._elapsed  = 0.0
+        self._t_start  = 0.0
+        self._path     = None
 
         self._build_ui()
 
-    # ─────────────────────────────────── UI ───────────────────────────────
+    # ── UI ─────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        # Canvas for video
-        self.canvas = tk.Canvas(self.root, bg="#000000", width=720, height=405,
+        self.canvas = tk.Canvas(self.root, bg="#000", width=720, height=405,
                                 highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", self._on_resize)
 
         ctrl = tk.Frame(self.root, bg="#161b22", pady=6)
-        ctrl.pack(fill="x")
+        ctrl.pack(fill="x", side="bottom")
 
         # Seek bar
         self.seek_var = tk.DoubleVar(value=0)
-        self.seek_bar = ttk.Scale(ctrl, from_=0, to=100, orient="horizontal",
-                                  variable=self.seek_var, command=self._on_seek_drag)
-        self.seek_bar.pack(fill="x", padx=12, pady=(6, 2))
+        self.seek_bar = ttk.Scale(ctrl, from_=0, to=100,
+                                  variable=self.seek_var, orient="horizontal",
+                                  command=self._on_seek)
+        self.seek_bar.pack(fill="x", padx=14, pady=(6, 2))
 
         row = tk.Frame(ctrl, bg="#161b22")
-        row.pack(fill="x", padx=12, pady=4)
+        row.pack(fill="x", padx=14, pady=4)
 
-        btn = lambda text, cmd: tk.Button(
-            row, text=text, command=cmd,
-            bg="#21262d", fg="#c9d1d9", activebackground="#e94560",
-            activeforeground="#fff", relief="flat",
-            font=("Courier New", 10), padx=10, pady=4, cursor="hand2")
+        def btn(text, cmd, **kw):
+            return tk.Button(row, text=text, command=cmd,
+                             bg="#21262d", fg="#c9d1d9",
+                             activebackground="#e94560", activeforeground="#fff",
+                             relief="flat", font=("Courier New", 10),
+                             padx=10, pady=4, cursor="hand2", **kw)
 
-        self.open_btn  = btn("📂 Open",    self.open_file);  self.open_btn.pack(side="left", padx=3)
-        self.play_btn  = btn("▶  Play",   self.toggle_play); self.play_btn.pack(side="left", padx=3)
-        self.stop_btn  = btn("■  Stop",   self.stop_video);  self.stop_btn.pack(side="left", padx=3)
-        self.play_btn.config(state="disabled")
-        self.stop_btn.config(state="disabled")
+        self.open_btn = btn("📂  Open",   self.open_file)
+        self.play_btn = btn("▶   Play",  self.toggle_play, state="disabled")
+        self.stop_btn = btn("■   Stop",  self.stop,        state="disabled")
+        for b in (self.open_btn, self.play_btn, self.stop_btn):
+            b.pack(side="left", padx=3)
 
-        self.time_lbl = tk.Label(row, text="0:00 / 0:00", bg="#161b22",
-                                 fg="#8b949e", font=("Courier New", 9))
+        self.time_lbl = tk.Label(row, text="0:00 / 0:00",
+                                 bg="#161b22", fg="#8b949e",
+                                 font=("Courier New", 9))
         self.time_lbl.pack(side="left", padx=10)
 
         # Volume
-        tk.Label(row, text="🔊", bg="#161b22", fg="#8b949e",
-                 font=("Courier New", 10)).pack(side="right")
-        self.vol_var = tk.DoubleVar(value=0.7)
-        ttk.Scale(row, from_=0, to=1, orient="horizontal",
-                  variable=self.vol_var, length=90,
-                  command=self._on_volume).pack(side="right", padx=4)
+        tk.Label(row, text="🔊", bg="#161b22", fg="#8b949e").pack(side="right")
+        self.vol_var = tk.DoubleVar(value=0.8)
+        ttk.Scale(row, from_=0, to=1, variable=self.vol_var,
+                  orient="horizontal", length=90,
+                  command=self._on_vol).pack(side="right", padx=4)
 
-        self.info_lbl = tk.Label(ctrl, text="No file loaded — open an .ogv, .ogg, .webm or .mp4 file",
-                                 bg="#161b22", fg="#484f58",
-                                 font=("Courier New", 8))
-        self.info_lbl.pack(pady=(0, 4))
+        self.info = tk.Label(ctrl,
+                             text="Open an .ogv · .ogg · .webm · .mp4 file",
+                             bg="#161b22", fg="#484f58",
+                             font=("Courier New", 8))
+        self.info.pack(pady=(0, 4))
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ─────────────────────────────── File open ────────────────────────────
+    # ── Open file ──────────────────────────────────────────────────────────
     def open_file(self):
         path = filedialog.askopenfilename(
             title="Open Video",
             filetypes=[
-                ("OGG / OGV", "*.ogg *.ogv"),
-                ("WebM",      "*.webm"),
-                ("MP4",       "*.mp4"),
-                ("AVI",       "*.avi"),
-                ("All video", "*.ogg *.ogv *.webm *.mp4 *.avi *.mkv *.mov"),
-                ("All files", "*.*"),
+                ("OGG / OGV",  "*.ogg *.ogv"),
+                ("WebM",       "*.webm"),
+                ("MP4",        "*.mp4"),
+                ("All video",  "*.ogg *.ogv *.webm *.mp4 *.avi *.mkv *.mov"),
+                ("All files",  "*.*"),
             ])
-        if not path:
-            return
-        self._load(path)
+        if path:
+            self._load(path)
 
     def _load(self, path):
-        self._stop_threads()
-
-        cap = cv2.VideoCapture(path)
-        if not cap.isOpened():
-            messagebox.showerror("Error", f"Cannot open:\n{path}\n\nMake sure the file is a valid video.")
-            return
-
-        self._cap = cap
-        self._filepath = path
-        self._fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        self._total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self._current_frame = 0
+        self._kill()
+        self._path = path
+        self._W, self._H, self._fps, self._duration = probe(path)
+        self._elapsed = 0.0
         self._stopped = False
         self._playing = True
+        self._t_start = time.time()
 
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        name = os.path.basename(path)
-        size_mb = os.path.getsize(path) / 1024 / 1024
-        self.info_lbl.config(
-            text=f"{name}  ·  {w}×{h}  ·  {self._fps:.1f} fps  ·  {size_mb:.1f} MB",
+        mb = os.path.getsize(path) / 1024 / 1024
+        self.info.config(
+            text=f"{os.path.basename(path)}  ·  {self._W}×{self._H}"
+                 f"  ·  {self._fps:.1f} fps  ·  {mb:.1f} MB",
             fg="#8b949e")
         self.play_btn.config(text="⏸  Pause", state="normal")
         self.stop_btn.config(state="normal")
-        self.seek_var.set(0)
 
-        # Extract & play audio in background
-        if AUDIO_BACKEND:
-            threading.Thread(target=self._play_audio, args=(path,), daemon=True).start()
+        # Start ffmpeg → raw RGB pipe
+        cmd = [
+            FFMPEG, "-i", path,
+            "-f", "rawvideo", "-pix_fmt", "rgb24",
+            "-vf", f"scale={self._W}:{self._H}",
+            "-"
+        ]
+        self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL)
 
-        threading.Thread(target=self._decode_thread, daemon=True).start()
-        self.root.after(0, self._display_loop)
+        threading.Thread(target=self._read_frames, daemon=True).start()
 
-    # ─────────────────────────── Decode thread ────────────────────────────
-    def _decode_thread(self):
-        cap = self._cap
-        delay = 1.0 / self._fps
+        if HAS_AUDIO:
+            threading.Thread(target=self._play_audio, args=(path,),
+                             daemon=True).start()
+
+        self._display_loop()
+
+    # ── Frame reader thread ────────────────────────────────────────────────
+    def _read_frames(self):
+        fs = self._W * self._H * 3
+        proc = self._proc
+        fps  = self._fps
+        delay = 1.0 / fps
+
         while True:
-            with self._lock:
-                if self._stopped:
-                    break
-                paused = not self._playing
-                seek_to = self._seek_requested
-                self._seek_requested = None
-
-            if seek_to is not None:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, seek_to)
-                with self._lock:
-                    self._current_frame = seek_to
-                while not self._frame_q.empty():
-                    try: self._frame_q.get_nowait()
-                    except: pass
-
-            if paused:
+            if self._stopped:
+                break
+            if not self._playing:
                 time.sleep(0.05)
                 continue
-
-            ok, frame = cap.read()
-            if not ok:
-                break  # end of video
-
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            with self._lock:
-                self._current_frame += 1
-
+            data = proc.stdout.read(fs)
+            if len(data) < fs:
+                break
             try:
-                self._frame_q.put(frame_rgb, timeout=0.1)
+                self._fq.put(data, timeout=0.2)
             except queue.Full:
                 pass
+            time.sleep(delay * 0.5)
 
-            time.sleep(delay * 0.9)
-
-        with self._lock:
-            self._playing = False
-
-    # ─────────────────────────── Display loop ─────────────────────────────
+    # ── Display loop (tkinter main thread) ────────────────────────────────
     def _display_loop(self):
         if self._stopped:
             return
+        if self._playing:
+            try:
+                data = self._fq.get_nowait()
+                img = Image.frombytes("RGB", (self._W, self._H), data)
+                # Fit to canvas
+                cw = max(self.canvas.winfo_width(),  1)
+                ch = max(self.canvas.winfo_height(), 1)
+                scale = min(cw / self._W, ch / self._H)
+                nw, nh = int(self._W * scale), int(self._H * scale)
+                img = img.resize((nw, nh), Image.BILINEAR)
+                tk_img = ImageTk.PhotoImage(img)
+                self.canvas.delete("all")
+                self.canvas.create_image(cw // 2, ch // 2,
+                                         image=tk_img, anchor="center")
+                self.canvas._img = tk_img
 
-        try:
-            frame = self._frame_q.get_nowait()
-            self._render_frame(frame)
-            self._update_seek()
-        except queue.Empty:
-            pass
+                # Update time
+                self._elapsed = time.time() - self._t_start
+                if self._duration:
+                    pct = min(self._elapsed / self._duration * 100, 100)
+                    self.seek_var.set(pct)
+                self.time_lbl.config(
+                    text=f"{self._fmt(self._elapsed)} / {self._fmt(self._duration)}")
+            except queue.Empty:
+                pass
 
-        if not self._stopped:
-            delay = max(1, int(1000 / self._fps))
-            self.root.after(delay, self._display_loop)
+        delay = max(1, int(1000 / self._fps))
+        self.root.after(delay, self._display_loop)
 
-    def _render_frame(self, frame_rgb):
-        cw = self.canvas.winfo_width()  or 720
-        ch = self.canvas.winfo_height() or 405
-        fh, fw = frame_rgb.shape[:2]
-        scale = min(cw / fw, ch / fh)
-        nw, nh = int(fw * scale), int(fh * scale)
-        resized = cv2.resize(frame_rgb, (nw, nh))
-        img = tk.PhotoImage(width=nw, height=nh)
-        # Fast raw-data path
-        data = resized.tobytes()
-        img.put("{" + " ".join(
-            "#{:02x}{:02x}{:02x}".format(data[i], data[i+1], data[i+2])
-            for i in range(0, len(data), 3)
-        ) + "}", to=(0, 0, nw, nh))
-        self.canvas.delete("all")
-        self.canvas.create_image(cw // 2, ch // 2, image=img, anchor="center")
-        self.canvas._img = img   # keep reference
-
-    def _update_seek(self):
-        if self._total_frames > 0:
-            pct = self._current_frame / self._total_frames * 100
-            self.seek_var.set(pct)
-            cur = self._current_frame / self._fps
-            tot = self._total_frames / self._fps
-            self.time_lbl.config(text=f"{self._fmt(cur)} / {self._fmt(tot)}")
-
-    # ─────────────────────────── Audio (pygame) ───────────────────────────
+    # ── Audio ──────────────────────────────────────────────────────────────
     def _play_audio(self, path):
-        """Extract audio via ffmpeg → temp wav, play with pygame."""
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp.close()
+        subprocess.run([FFMPEG, "-y", "-i", path,
+                        "-vn", "-ar", "44100", "-ac", "2", tmp.name],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            tmp.close()
-            subprocess.run([
-                FFMPEG, "-y", "-i", path,
-                "-vn", "-ar", "44100", "-ac", "2", "-f", "wav", tmp.name
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
             pygame.mixer.music.load(tmp.name)
             pygame.mixer.music.set_volume(self.vol_var.get())
             pygame.mixer.music.play()
         except Exception:
-            pass   # silent fallback
+            pass
 
-    # ─────────────────────────── Controls ─────────────────────────────────
+    # ── Controls ───────────────────────────────────────────────────────────
     def toggle_play(self):
-        with self._lock:
-            self._playing = not self._playing
+        self._playing = not self._playing
         if self._playing:
+            self._t_start = time.time() - self._elapsed
             self.play_btn.config(text="⏸  Pause")
-            if AUDIO_BACKEND:
-                pygame.mixer.music.unpause()
+            if HAS_AUDIO:
+                try: pygame.mixer.music.unpause()
+                except: pass
         else:
-            self.play_btn.config(text="▶  Play")
-            if AUDIO_BACKEND:
-                pygame.mixer.music.pause()
+            self.play_btn.config(text="▶   Play")
+            if HAS_AUDIO:
+                try: pygame.mixer.music.pause()
+                except: pass
 
-    def stop_video(self):
-        with self._lock:
-            self._playing = False
-            self._seek_requested = 0
+    def stop(self):
+        self._playing = False
+        self._elapsed = 0.0
         self.seek_var.set(0)
         self.time_lbl.config(text="0:00 / 0:00")
-        self.play_btn.config(text="▶  Play")
-        if AUDIO_BACKEND:
-            pygame.mixer.music.stop()
+        self.play_btn.config(text="▶   Play")
+        if HAS_AUDIO:
+            try: pygame.mixer.music.stop()
+            except: pass
+        # Reload from start
+        if self._path:
+            self.root.after(200, lambda: self._load(self._path))
 
-    def _on_seek_drag(self, val):
-        if self._total_frames:
-            frame_idx = int(float(val) / 100 * self._total_frames)
-            with self._lock:
-                self._seek_requested = frame_idx
+    def _on_seek(self, val):
+        pass   # seeking in raw pipe mode requires re-launching ffmpeg with -ss
 
-    def _on_volume(self, val):
-        if AUDIO_BACKEND:
+    def _on_vol(self, val):
+        if HAS_AUDIO:
             try: pygame.mixer.music.set_volume(float(val))
             except: pass
 
-    def _on_resize(self, _event=None):
-        pass  # next frame render picks up new canvas size automatically
-
-    # ─────────────────────────── Cleanup ──────────────────────────────────
-    def _stop_threads(self):
-        with self._lock:
-            self._stopped = True
-            self._playing = False
-        time.sleep(0.15)
-        if self._cap:
-            self._cap.release()
-            self._cap = None
+    # ── Cleanup ────────────────────────────────────────────────────────────
+    def _kill(self):
+        self._stopped = True
+        self._playing = False
+        time.sleep(0.1)
+        if self._proc:
+            try: self._proc.kill()
+            except: pass
+            self._proc = None
+        while not self._fq.empty():
+            try: self._fq.get_nowait()
+            except: pass
 
     def _on_close(self):
-        self._stop_threads()
-        if AUDIO_BACKEND:
+        self._kill()
+        if HAS_AUDIO:
             try: pygame.mixer.music.stop()
             except: pass
         self.root.destroy()
 
     @staticmethod
     def _fmt(s):
-        s = int(s)
+        s = int(s or 0)
         return f"{s // 60}:{s % 60:02d}"
 
 
-# ─────────────────────────────── Entry point ──────────────────────────────
 if __name__ == "__main__":
     root = tk.Tk()
-    app = VideoPlayer(root)
+    app = Player(root)
     if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
         app._load(sys.argv[1])
     root.mainloop()
