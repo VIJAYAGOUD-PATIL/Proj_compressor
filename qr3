@@ -164,19 +164,44 @@
   // Auto-load when the page opens
   loadExcelData();
 
+  // Converts common "share" link formats into direct-download links.
+  function toDirectDownloadUrl(url) {
+    // Google Drive file share link: .../file/d/FILE_ID/view...
+    let m = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
+    if (m) return `https://drive.google.com/uc?export=download&id=${m[1]}`;
+
+    // Google Drive "open?id=FILE_ID" link
+    m = url.match(/drive\.google\.com\/open\?id=([^&]+)/);
+    if (m) return `https://drive.google.com/uc?export=download&id=${m[1]}`;
+
+    // Google Sheets edit link -> export as xlsx
+    m = url.match(/docs\.google\.com\/spreadsheets\/d\/([^/]+)/);
+    if (m) return `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`;
+
+    return url; // assume it's already a direct link
+  }
+
   async function loadExcelData() {
-    const url = excelUrl.trim();
+    let url = excelUrl.trim();
     logTableWrap.innerHTML = "";
     if (!url || url.includes("YOUR_HARDWARE_LOG")) {
       logStatus.textContent = "Set the excelUrl variable in the code to your Excel file link.";
       return;
     }
 
+    url = toDirectDownloadUrl(url);
     logStatus.textContent = "Loading...";
     try {
       const response = await fetch(url);
       if (!response.ok) throw new Error("HTTP " + response.status);
+      const contentType = response.headers.get("content-type") || "";
       const arrayBuffer = await response.arrayBuffer();
+
+      // If the server returned an HTML page (e.g. a login/warning page) instead of the file, catch it early.
+      if (contentType.includes("text/html")) {
+        throw new Error("The link returned a webpage instead of the Excel file (likely needs a direct/public download link).");
+      }
+
       const workbook = XLSX.read(arrayBuffer, { type: "array" });
       const firstSheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[firstSheetName];
@@ -191,7 +216,7 @@
       logStatus.textContent = `Loaded sheet "${firstSheetName}" — ${rows.length - 1} rows.`;
     } catch (err) {
       logStatus.textContent =
-        "Could not load the file. Make sure the link is a direct, publicly accessible .xlsx download link (CORS or access restrictions can block loading). Error: " + err.message;
+        "Could not load the file. Make sure the link is a direct, publicly accessible .xlsx file (CORS or access restrictions can block loading). Error: " + err.message;
     }
   }
 
