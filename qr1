@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hardware Log</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --bg:#1C1F26;
+  --surface:#242933;
+  --surface-2:#2B3140;
+  --line:#3A4152;
+  --amber:#F2A93B;
+  --amber-dim:#8A6626;
+  --text:#E8E6E1;
+  --muted:#8B92A0;
+  --green:#4CAF7D;
+  --red:#E0654F;
+}
+*{box-sizing:border-box;}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:'Inter',sans-serif;
+  padding:32px 20px 60px;
+}
+.wrap{max-width:760px;margin:0 auto;}
+
+.tag{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-bottom:6px;
+}
+.tag-dot{
+  width:9px;height:9px;border-radius:50%;
+  background:var(--amber);
+  box-shadow:0 0 8px var(--amber);
+}
+.eyebrow{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:12px;
+  letter-spacing:0.14em;
+  text-transform:uppercase;
+  color:var(--amber);
+}
+h1{
+  font-family:'Barlow Condensed',sans-serif;
+  font-weight:700;
+  font-size:38px;
+  letter-spacing:0.01em;
+  margin:0 0 4px;
+}
+.sub{
+  color:var(--muted);
+  font-size:14px;
+  margin:0 0 28px;
+}
+
+.card{
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:22px;
+  margin-bottom:24px;
+  position:relative;
+}
+.card::before{
+  content:'';
+  position:absolute;
+  left:0;top:16px;bottom:16px;
+  width:3px;
+  background:var(--amber);
+  border-radius:0 2px 2px 0;
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px;
+  margin-bottom:14px;
+}
+.field{display:flex;flex-direction:column;gap:6px;}
+.field.full{grid-column:1 / -1;}
+label{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+input{
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:6px;
+  padding:10px 12px;
+  color:var(--text);
+  font-family:'Inter',sans-serif;
+  font-size:14px;
+  outline:none;
+  transition:border-color .15s;
+}
+input:focus{border-color:var(--amber);}
+input::-webkit-calendar-picker-indicator{filter:invert(0.7);}
+
+.btn-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+button{
+  font-family:'Inter',sans-serif;
+  font-weight:600;
+  font-size:14px;
+  border:none;
+  border-radius:6px;
+  padding:11px 20px;
+  cursor:pointer;
+  transition:transform .1s, opacity .15s;
+}
+button:active{transform:scale(0.97);}
+.btn-primary{background:var(--amber);color:#1C1F26;}
+.btn-primary:hover{opacity:0.9;}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--line);}
+.btn-ghost:hover{color:var(--text);border-color:var(--muted);}
+.status{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:12px;
+  color:var(--green);
+  min-height:16px;
+}
+.status.err{color:var(--red);}
+
+.section-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:baseline;
+  margin-bottom:12px;
+}
+.section-head h2{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:20px;
+  font-weight:700;
+  margin:0;
+  letter-spacing:0.01em;
+}
+.count{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:12px;
+  color:var(--muted);
+}
+
+.log-list{display:flex;flex-direction:column;gap:8px;}
+.entry{
+  display:grid;
+  grid-template-columns:auto 1fr 1fr auto auto;
+  align-items:center;
+  gap:14px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:12px 14px;
+}
+.serial{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  color:var(--amber-dim);
+  color:var(--amber);
+  opacity:0.7;
+}
+.e-hw{font-weight:600;font-size:14px;}
+.e-user{color:var(--muted);font-size:13px;}
+.e-date{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:12px;
+  color:var(--muted);
+}
+.del{
+  background:transparent;
+  border:none;
+  color:var(--muted);
+  font-size:16px;
+  padding:2px 6px;
+  cursor:pointer;
+}
+.del:hover{color:var(--red);}
+
+.empty{
+  color:var(--muted);
+  font-size:13px;
+  font-style:italic;
+  padding:20px 0;
+  text-align:center;
+  border:1px dashed var(--line);
+  border-radius:8px;
+}
+
+.hint{
+  font-size:12px;
+  color:var(--muted);
+  margin-top:18px;
+  line-height:1.6;
+}
+
+@media (max-width:520px){
+  .grid{grid-template-columns:1fr;}
+  .entry{grid-template-columns:1fr auto;grid-template-areas:"a a" "b c" "d d";}
+  h1{font-size:30px;}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="tag"><span class="tag-dot"></span><span class="eyebrow">Asset tracking</span></div>
+  <h1>Hardware Log</h1>
+  <p class="sub">Every entry is saved automatically. Export to Excel anytime and upload it to your OneDrive.</p>
+
+  <div class="card">
+    <div class="grid">
+      <div class="field full">
+        <label for="hw">Hardware name</label>
+        <input id="hw" type="text" placeholder="e.g. Dell Latitude 5440 — SN 8821">
+      </div>
+      <div class="field">
+        <label for="user">User</label>
+        <input id="user" type="text" placeholder="e.g. R. Sharma">
+      </div>
+      <div class="field">
+        <label for="date">Date</label>
+        <input id="date" type="date">
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn-primary" onclick="logEntry()">Log entry</button>
+      <button class="btn-ghost" onclick="exportExcel()">Export to Excel</button>
+      <span class="status" id="status"></span>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>Log</h2>
+    <span class="count" id="count">0 entries</span>
+  </div>
+  <div class="log-list" id="list"></div>
+
+  <p class="hint">
+    Entries persist in this tool across visits. Click "Export to Excel" to download a .xlsx file —
+    drag it into your OneDrive folder (or upload it at onedrive.com) to keep it there.
+  </p>
+
+</div>
+
+<script>
+const STORAGE_KEY = 'hardware-log-entries';
+let entries = [];
+
+document.getElementById('date').valueAsDate = new Date();
+
+async function loadEntries(){
+  try{
+    const res = await window.storage.get(STORAGE_KEY);
+    entries = res ? JSON.parse(res.value) : [];
+  }catch(e){
+    entries = [];
+  }
+  render();
+}
+
+async function saveEntries(){
+  try{
+    const result = await window.storage.set(STORAGE_KEY, JSON.stringify(entries));
+    if(!result) throw new Error('save failed');
+    return true;
+  }catch(e){
+    setStatus('Could not save — try again', true);
+    return false;
+  }
+}
+
+function setStatus(msg, isErr){
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status' + (isErr ? ' err' : '');
+  if(msg) setTimeout(()=>{ if(el.textContent===msg) el.textContent=''; }, 2500);
+}
+
+async function logEntry(){
+  const hw = document.getElementById('hw').value.trim();
+  const user = document.getElementById('user').value.trim();
+  const date = document.getElementById('date').value;
+
+  if(!hw || !user || !date){
+    setStatus('Fill in all three fields', true);
+    return;
+  }
+
+  const entry = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+    hardware: hw,
+    user: user,
+    date: date
+  };
+  entries.unshift(entry);
+  const ok = await saveEntries();
+  if(ok){
+    setStatus('Entry logged');
+    document.getElementById('hw').value = '';
+    document.getElementById('user').value = '';
+    document.getElementById('date').valueAsDate = new Date();
+    render();
+  }
+}
+
+async function deleteEntry(id){
+  entries = entries.filter(e => e.id !== id);
+  await saveEntries();
+  render();
+}
+
+function render(){
+  const list = document.getElementById('list');
+  document.getElementById('count').textContent = entries.length + (entries.length===1 ? ' entry' : ' entries');
+
+  if(entries.length === 0){
+    list.innerHTML = '<div class="empty">No entries yet — log your first item above.</div>';
+    return;
+  }
+
+  list.innerHTML = entries.map((e,i) => `
+    <div class="entry">
+      <span class="serial">#${String(entries.length - i).padStart(3,'0')}</span>
+      <span class="e-hw">${escapeHtml(e.hardware)}</span>
+      <span class="e-user">${escapeHtml(e.user)}</span>
+      <span class="e-date">${e.date}</span>
+      <button class="del" onclick="deleteEntry('${e.id}')" title="Delete">✕</button>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(str){
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+function exportExcel(){
+  if(entries.length === 0){
+    setStatus('Nothing to export yet', true);
+    return;
+  }
+  try{
+    const rows = [...entries].reverse().map((e,i) => ({
+      'S.No': i+1,
+      'Hardware Name': e.hardware,
+      'User': e.user,
+      'Date': e.date
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [{wch:6},{wch:34},{wch:20},{wch:14}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Hardware Log');
+    XLSX.writeFile(wb, 'hardware-log.xlsx');
+    setStatus('Excel file downloaded');
+  }catch(e){
+    setStatus('Export failed', true);
+  }
+}
+
+loadEntries();
+</script>
+</body>
+</html>
