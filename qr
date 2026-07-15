@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>Hardware Check-Out Log</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  :root{
+    --bg:#181B22;
+    --card:#20242D;
+    --card-edge:#2C313D;
+    --amber:#E8A33D;
+    --amber-dim:#8A6224;
+    --text:#F3F1EA;
+    --muted:#8B93A1;
+    --success:#4CAF6D;
+    --danger:#E2694B;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(circle at 15% 8%, rgba(232,163,61,0.06), transparent 40%),
+      var(--bg);
+    color:var(--text);
+    font-family:'Inter',sans-serif;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:28px 16px;
+  }
+
+  .wrap{ width:100%; max-width:440px; }
+
+  .eyebrow{
+    display:flex; align-items:center; gap:8px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11.5px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--amber); margin-bottom:10px; padding-left:2px;
+  }
+  .eyebrow .dot{
+    width:6px;height:6px;border-radius:50%;background:var(--amber);
+    box-shadow:0 0 0 3px rgba(232,163,61,0.18);
+  }
+
+  h1{
+    font-size:26px; margin:0 0 4px; line-height:1.15; letter-spacing:-0.01em;
+  }
+  .sub{ color:var(--muted); font-size:14px; margin:0 0 22px; }
+
+  .tag-card{
+    position:relative;
+    background:var(--card);
+    border:1px solid var(--card-edge);
+    border-radius:14px;
+    padding:26px 24px 24px;
+    box-shadow:0 20px 40px -20px rgba(0,0,0,0.6);
+  }
+
+  .perf{
+    display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:20px;
+  }
+  .perf .line{
+    flex:1; height:0; border-top:2px dashed var(--card-edge); margin:0 10px;
+  }
+  .grommet{
+    width:14px; height:14px; border-radius:50%;
+    background:var(--bg); border:1px solid var(--card-edge);
+    flex-shrink:0;
+  }
+
+  label{
+    display:block;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px; letter-spacing:0.1em; text-transform:uppercase;
+    color:var(--muted); margin-bottom:7px;
+  }
+  .field{ margin-bottom:18px; }
+
+  input[type=text], input[type=date]{
+    width:100%;
+    background:var(--bg);
+    border:1px solid var(--card-edge);
+    color:var(--text);
+    font-family:'Inter',sans-serif;
+    font-size:16px;
+    padding:13px 14px;
+    border-radius:9px;
+    outline:none;
+    transition:border-color .15s ease, box-shadow .15s ease;
+    -webkit-appearance:none;
+  }
+  input::placeholder{ color:#59606E; }
+  input:focus{
+    border-color:var(--amber);
+    box-shadow:0 0 0 3px rgba(232,163,61,0.15);
+  }
+  input[type=date]{ color-scheme:dark; }
+
+  button{
+    width:100%;
+    background:var(--amber);
+    color:#20242D;
+    border:none;
+    font-family:'Inter',sans-serif;
+    font-weight:700;
+    font-size:15.5px;
+    padding:14px 18px;
+    border-radius:9px;
+    cursor:pointer;
+    margin-top:4px;
+    transition:transform .08s ease, background .15s ease;
+  }
+  button:active{ transform:scale(0.98); }
+  button:disabled{ background:var(--amber-dim); cursor:not-allowed; }
+
+  .status{
+    margin-top:16px;
+    font-size:13.5px;
+    padding:12px 14px;
+    border-radius:9px;
+    display:none;
+    align-items:flex-start;
+    gap:8px;
+    line-height:1.45;
+  }
+  .status.show{ display:flex; }
+  .status.ok{ background:rgba(76,175,109,0.12); color:var(--success); }
+  .status.err{ background:rgba(226,105,75,0.12); color:var(--danger); }
+
+  .foot{
+    text-align:center; margin-top:20px;
+  }
+  .foot button.link{
+    background:none; border:none; color:var(--muted);
+    font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.06em;
+    text-transform:uppercase; cursor:pointer; padding:6px;
+    width:auto; margin:0;
+  }
+  .foot button.link:hover{ color:var(--amber); }
+
+  .qr-modal{
+    display:none;
+    position:fixed; inset:0; background:rgba(10,11,14,0.82);
+    align-items:center; justify-content:center; padding:24px; z-index:10;
+  }
+  .qr-modal.show{ display:flex; }
+  .qr-box{
+    background:#fff; padding:20px; border-radius:14px; text-align:center;
+  }
+  .qr-box #qrcode{ line-height:0; }
+  .qr-box p{
+    font-family:'IBM Plex Mono',monospace; font-size:11px; color:#333;
+    margin:12px 0 0; word-break:break-all;
+  }
+  .qr-close{
+    margin-top:14px; background:var(--card); color:var(--text);
+    border:none; padding:10px 16px; border-radius:8px; cursor:pointer;
+    font-family:'Inter',sans-serif; font-size:13px; width:auto;
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="eyebrow"><span class="dot"></span>Asset Log</div>
+  <h1>Hardware Check-Out</h1>
+  <p class="sub">Scan complete — fill in the details below to log this item.</p>
+
+  <div class="tag-card">
+    <div class="perf">
+      <div class="grommet"></div>
+      <div class="line"></div>
+      <div class="grommet"></div>
+    </div>
+
+    <form id="logForm">
+      <div class="field">
+        <label for="hardware">Hardware name</label>
+        <input type="text" id="hardware" name="hardware" placeholder="e.g. Dell Latitude 5440 — SN 8827" required autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="person">Person name</label>
+        <input type="text" id="person" name="person" placeholder="Full name" required autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="date">Date</label>
+        <input type="date" id="date" name="date" required>
+      </div>
+      <button type="submit" id="submitBtn">Log entry</button>
+      <div class="status" id="status"></div>
+    </form>
+  </div>
+
+  <div class="foot">
+    <button type="button" class="link" id="showQr">Show QR for this page</button>
+  </div>
+</div>
+
+<div class="qr-modal" id="qrModal">
+  <div class="qr-box">
+    <div id="qrcode"></div>
+    <p id="qrUrl"></p>
+    <button class="qr-close" id="qrClose">Close</button>
+  </div>
+</div>
+
+<script>
+  // ======================================================================
+  // CONFIG — paste the Power Automate "HTTP request received" trigger URL
+  // here once you've created the flow (see setup instructions).
+  // ======================================================================
+  const CONFIG = {
+    FLOW_URL: "PASTE_YOUR_POWER_AUTOMATE_HTTP_URL_HERE"
+  };
+
+  // default date = today
+  document.getElementById('date').valueAsDate = new Date();
+
+  const form = document.getElementById('logForm');
+  const statusEl = document.getElementById('status');
+  const submitBtn = document.getElementById('submitBtn');
+
+  function showStatus(kind, msg){
+    statusEl.className = 'status show ' + kind;
+    statusEl.textContent = msg;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    if (CONFIG.FLOW_URL.includes("PASTE_YOUR")) {
+      showStatus('err', 'This form isn\'t connected to Excel yet — the site owner needs to add the Power Automate URL.');
+      return;
+    }
+
+    const payload = {
+      hardware: document.getElementById('hardware').value.trim(),
+      person: document.getElementById('person').value.trim(),
+      date: document.getElementById('date').value
+    };
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Logging…';
+    statusEl.className = 'status';
+
+    try {
+      // Power Automate HTTP triggers generally don't return CORS headers,
+      // so we fire the request in no-cors mode. We can't read the response,
+      // but the row still gets appended to your Excel table.
+      await fetch(CONFIG.FLOW_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      showStatus('ok', '✓ Logged — you can close this page or scan again for the next item.');
+      form.reset();
+      document.getElementById('date').valueAsDate = new Date();
+    } catch (err) {
+      showStatus('err', 'Couldn\'t reach the log. Check your connection and try again.');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Log entry';
+    }
+  });
+
+  // --- QR modal: shows a QR code that points at THIS page's current URL ---
+  const qrModal = document.getElementById('qrModal');
+  document.getElementById('showQr').addEventListener('click', () => {
+    document.getElementById('qrcode').innerHTML = '';
+    new QRCode(document.getElementById('qrcode'), {
+      text: window.location.href,
+      width: 220,
+      height: 220,
+      colorDark: "#181B22",
+      colorLight: "#ffffff"
+    });
+    document.getElementById('qrUrl').textContent = window.location.href;
+    qrModal.classList.add('show');
+  });
+  document.getElementById('qrClose').addEventListener('click', () => {
+    qrModal.classList.remove('show');
+  });
+</script>
+
+</body>
+</html>
