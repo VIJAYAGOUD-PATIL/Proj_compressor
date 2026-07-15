@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>QR Code / Hardware Log</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+    padding: 24px 16px;
+    font-family: Arial, sans-serif;
+    background: #f5f5f5;
+  }
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+  .tab-btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    background: #e0e0e0;
+    color: #333;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .tab-btn.active {
+    background: #2563eb;
+    color: #fff;
+  }
+  .panel { display: none; width: 100%; max-width: 700px; }
+  .panel.active { display: flex; flex-direction: column; align-items: center; }
+
+  #qrcode {
+    padding: 16px;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  p.url-label {
+    margin-top: 16px;
+    color: #333;
+    word-break: break-all;
+    max-width: 300px;
+    text-align: center;
+  }
+
+  /* Hardware log panel */
+  .log-controls {
+    width: 100%;
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .log-controls input {
+    flex: 1;
+    padding: 10px 12px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .log-controls button {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 6px;
+    background: #2563eb;
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .log-controls button:hover { background: #1d4ed8; }
+
+  #logStatus {
+    color: #555;
+    font-size: 13px;
+    margin-bottom: 12px;
+    min-height: 18px;
+  }
+  #logTableWrap {
+    width: 100%;
+    overflow: auto;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+  }
+  th, td {
+    border: 1px solid #e5e5e5;
+    padding: 6px 10px;
+    text-align: left;
+    white-space: nowrap;
+  }
+  th {
+    background: #f0f4ff;
+    position: sticky;
+    top: 0;
+  }
+  tr:nth-child(even) { background: #fafafa; }
+</style>
+</head>
+<body>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="qr">QR Code</button>
+  <button class="tab-btn" data-tab="log">View Hardware Log</button>
+</div>
+
+<!-- QR Code Panel -->
+<div id="qr" class="panel active">
+  <div id="qrcode"></div>
+  <p class="url-label" id="urlLabel"></p>
+</div>
+
+<!-- Hardware Log Panel -->
+<div id="log" class="panel">
+  <div id="logStatus"></div>
+  <div id="logTableWrap"></div>
+</div>
+
+<script>
+  // ---- Tab switching ----
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById(btn.dataset.tab).classList.add("active");
+    });
+  });
+
+  // ---- QR Code ----
+  // ↓↓↓ Replace this URL with your actual link ↓↓↓
+  const targetUrl = "https://forms.gle/YOUR_CODE_HERE";
+
+  document.getElementById("urlLabel").textContent = targetUrl;
+
+  new QRCode(document.getElementById("qrcode"), {
+    text: targetUrl,
+    width: 256,
+    height: 256,
+    colorDark: "#000000",
+    colorLight: "#ffffff",
+    correctLevel: QRCode.CorrectLevel.H
+  });
+
+  // ---- Hardware Log Viewer ----
+  const logStatus = document.getElementById("logStatus");
+  const logTableWrap = document.getElementById("logTableWrap");
+
+  // ↓↓↓ Replace this URL with your actual Excel file link ↓↓↓
+  const excelUrl = "https://example.com/YOUR_HARDWARE_LOG.xlsx";
+
+  // Auto-load when the page opens
+  loadExcelData();
+
+  async function loadExcelData() {
+    const url = excelUrl.trim();
+    logTableWrap.innerHTML = "";
+    if (!url || url.includes("YOUR_HARDWARE_LOG")) {
+      logStatus.textContent = "Set the excelUrl variable in the code to your Excel file link.";
+      return;
+    }
+
+    logStatus.textContent = "Loading...";
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const arrayBuffer = await response.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      const firstSheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+      if (!rows.length) {
+        logStatus.textContent = "The sheet appears to be empty.";
+        return;
+      }
+
+      renderTable(rows);
+      logStatus.textContent = `Loaded sheet "${firstSheetName}" — ${rows.length - 1} rows.`;
+    } catch (err) {
+      logStatus.textContent =
+        "Could not load the file. Make sure the link is a direct, publicly accessible .xlsx download link (CORS or access restrictions can block loading). Error: " + err.message;
+    }
+  }
+
+  function renderTable(rows) {
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    rows[0].forEach(cell => {
+      const th = document.createElement("th");
+      th.textContent = cell;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    for (let i = 1; i < rows.length; i++) {
+      const tr = document.createElement("tr");
+      rows[i].forEach(cell => {
+        const td = document.createElement("td");
+        td.textContent = cell;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+
+    logTableWrap.appendChild(table);
+  }
+</script>
+
+</body>
+</html>
